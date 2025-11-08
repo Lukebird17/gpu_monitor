@@ -47,7 +47,7 @@ case $choice in
         echo "按 Ctrl+C 停止服务"
         echo ""
         
-        python3 gpu_monitor_server.py --port $port
+        python3 gpu_monitor_server_enhanced.py --port $port
         ;;
     
     2)
