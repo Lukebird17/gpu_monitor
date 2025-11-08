@@ -19,13 +19,17 @@ gpu_data = {}
 DATA_TIMEOUT = 60
 
 # 存储历史数据用于图表显示
+# 全局时间轴（所有服务器共享）
+global_timestamps = deque(maxlen=100)
+
+# 每个服务器的数据（使用全局时间轴的索引）
 history_data = defaultdict(lambda: {
-    'timestamps': deque(maxlen=100),
-    'total_memory_percent': deque(maxlen=100),
-    'gpu_memory': defaultdict(lambda: deque(maxlen=100))
+    'total_memory_percent': {},  # {timestamp: value}
+    'gpu_memory': defaultdict(dict)  # {gpu_id: {timestamp: value}}
 })
 
 server_start_time = time.time()
+last_update_time = None
 
 # 数据库控制台风格HTML模板
 HTML_TEMPLATE = """
@@ -271,19 +275,21 @@ HTML_TEMPLATE = """
             font-weight: 600;
         }
         
-        /* GPU卡片网格 */
+        /* GPU卡片网格 - 固定一行4个 */
         .gpu-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(450px, 1fr));
-            gap: 20px;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
         }
         
         .gpu-card {
             background: var(--darker-bg);
             border: 1px solid var(--card-border);
             border-radius: 6px;
-            padding: 20px;
+            padding: 12px;
             transition: all 0.2s;
+            min-width: 0;
+            overflow: hidden;
         }
         
         .gpu-card:hover {
@@ -294,20 +300,20 @@ HTML_TEMPLATE = """
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 12px;
+            margin-bottom: 8px;
         }
         
         .gpu-title {
-            font-size: 1.1em;
+            font-size: 0.85em;
             font-weight: 600;
             color: var(--text-primary);
             font-family: 'Roboto Mono', monospace;
         }
         
         .gpu-status {
-            padding: 4px 12px;
-            border-radius: 12px;
-            font-size: 0.8em;
+            padding: 2px 8px;
+            border-radius: 8px;
+            font-size: 0.65em;
             font-weight: 600;
             text-transform: uppercase;
         }
@@ -329,35 +335,38 @@ HTML_TEMPLATE = """
         
         .gpu-model {
             color: var(--text-secondary);
-            font-size: 0.9em;
-            margin-bottom: 15px;
+            font-size: 0.7em;
+            margin-bottom: 10px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
         
         /* 指标行 */
         .metrics-row {
             display: grid;
             grid-template-columns: repeat(2, 1fr);
-            gap: 12px;
-            margin-bottom: 15px;
+            gap: 8px;
+            margin-bottom: 10px;
         }
         
         .metric {
             background: var(--card-bg);
-            padding: 12px;
-            border-radius: 6px;
-            border-left: 3px solid var(--primary);
+            padding: 8px;
+            border-radius: 4px;
+            border-left: 2px solid var(--primary);
         }
         
         .metric-label {
-            font-size: 0.8em;
+            font-size: 0.65em;
             color: var(--text-muted);
-            margin-bottom: 4px;
+            margin-bottom: 2px;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
+            letter-spacing: 0.2px;
         }
         
         .metric-value {
-            font-size: 1.4em;
+            font-size: 0.95em;
             font-weight: 700;
             color: var(--text-primary);
             font-family: 'Roboto Mono', monospace;
@@ -365,20 +374,20 @@ HTML_TEMPLATE = """
         
         /* 进度条 */
         .progress-section {
-            margin-bottom: 15px;
+            margin-bottom: 10px;
         }
         
         .progress-header {
             display: flex;
             justify-content: space-between;
-            margin-bottom: 6px;
-            font-size: 0.85em;
+            margin-bottom: 3px;
+            font-size: 0.65em;
         }
         
         .progress-label {
             color: var(--text-secondary);
             text-transform: uppercase;
-            letter-spacing: 0.5px;
+            letter-spacing: 0.2px;
         }
         
         .progress-value {
@@ -388,9 +397,9 @@ HTML_TEMPLATE = """
         }
         
         .progress-bar {
-            height: 8px;
+            height: 5px;
             background: var(--card-bg);
-            border-radius: 4px;
+            border-radius: 2px;
             overflow: hidden;
             position: relative;
         }
@@ -398,7 +407,7 @@ HTML_TEMPLATE = """
         .progress-fill {
             height: 100%;
             transition: width 0.5s ease;
-            border-radius: 4px;
+            border-radius: 2px;
         }
         
         .progress-low { background: var(--success); }
@@ -407,30 +416,30 @@ HTML_TEMPLATE = """
         
         /* 进程列表 */
         .process-section {
-            margin-top: 20px;
-            padding-top: 20px;
+            margin-top: 12px;
+            padding-top: 12px;
             border-top: 1px solid var(--card-border);
         }
         
         .process-header {
-            font-size: 0.9em;
+            font-size: 0.65em;
             font-weight: 600;
             color: var(--text-secondary);
-            margin-bottom: 12px;
+            margin-bottom: 6px;
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 4px;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
+            letter-spacing: 0.2px;
         }
         
         .process-list {
-            max-height: 200px;
+            max-height: 120px;
             overflow-y: auto;
         }
         
         .process-list::-webkit-scrollbar {
-            width: 6px;
+            width: 3px;
         }
         
         .process-list::-webkit-scrollbar-track {
@@ -439,18 +448,18 @@ HTML_TEMPLATE = """
         
         .process-list::-webkit-scrollbar-thumb {
             background: var(--card-border);
-            border-radius: 3px;
+            border-radius: 2px;
         }
         
         .process-item {
             background: var(--card-bg);
-            padding: 10px 12px;
-            margin: 6px 0;
-            border-radius: 4px;
+            padding: 5px 6px;
+            margin: 3px 0;
+            border-radius: 3px;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            font-size: 0.85em;
+            font-size: 0.65em;
             border-left: 2px solid transparent;
             transition: all 0.2s;
         }
@@ -462,17 +471,21 @@ HTML_TEMPLATE = """
         
         .process-info {
             flex: 1;
+            min-width: 0;
         }
         
         .process-name {
             color: var(--text-primary);
             font-weight: 600;
-            margin-bottom: 2px;
+            margin-bottom: 1px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
         
         .process-pid {
             color: var(--text-muted);
-            font-size: 0.9em;
+            font-size: 0.85em;
             font-family: 'Roboto Mono', monospace;
         }
         
@@ -480,6 +493,8 @@ HTML_TEMPLATE = """
             color: var(--primary);
             font-weight: 700;
             font-family: 'Roboto Mono', monospace;
+            font-size: 0.85em;
+            white-space: nowrap;
         }
         
         /* 空数据 */
@@ -507,10 +522,10 @@ HTML_TEMPLATE = """
             color: var(--text-secondary);
         }
         
-        /* 响应式 */
-        @media (max-width: 1200px) {
+        /* 响应式 - 只在很小的屏幕上调整 */
+        @media (max-width: 900px) {
             .gpu-grid {
-                grid-template-columns: 1fr;
+                grid-template-columns: repeat(2, 1fr);
             }
         }
         
@@ -525,6 +540,12 @@ HTML_TEMPLATE = """
             }
             
             .metrics-row {
+                grid-template-columns: 1fr;
+            }
+        }
+        
+        @media (max-width: 600px) {
+            .gpu-grid {
                 grid-template-columns: 1fr;
             }
         }
@@ -753,7 +774,19 @@ HTML_TEMPLATE = """
                         borderColor: '#334155',
                         borderWidth: 1,
                         padding: 12,
-                        displayColors: true
+                        displayColors: true,
+                        callbacks: {
+                            label: function(context) {
+                                let label = context.dataset.label || '';
+                                if (label) {
+                                    label += ': ';
+                                }
+                                if (context.parsed.y !== null) {
+                                    label += context.parsed.y.toFixed(1) + '%';
+                                }
+                                return label;
+                            }
+                        }
                     }
                 },
                 scales: {
@@ -766,7 +799,10 @@ HTML_TEMPLATE = """
                             color: '#94a3b8',
                             font: {
                                 size: 11
-                            }
+                            },
+                            maxRotation: 0,
+                            autoSkip: true,
+                            maxTicksLimit: 15
                         }
                     },
                     y: {
@@ -785,6 +821,11 @@ HTML_TEMPLATE = """
                                 return value + '%';
                             }
                         }
+                    }
+                },
+                elements: {
+                    line: {
+                        spanGaps: true
                     }
                 }
             }
@@ -826,7 +867,19 @@ HTML_TEMPLATE = """
                         borderColor: '#334155',
                         borderWidth: 1,
                         padding: 12,
-                        displayColors: true
+                        displayColors: true,
+                        callbacks: {
+                            label: function(context) {
+                                let label = context.dataset.label || '';
+                                if (label) {
+                                    label += ': ';
+                                }
+                                if (context.parsed.y !== null) {
+                                    label += context.parsed.y.toFixed(1) + '%';
+                                }
+                                return label;
+                            }
+                        }
                     }
                 },
                 scales: {
@@ -839,7 +892,10 @@ HTML_TEMPLATE = """
                             color: '#94a3b8',
                             font: {
                                 size: 11
-                            }
+                            },
+                            maxRotation: 0,
+                            autoSkip: true,
+                            maxTicksLimit: 15
                         }
                     },
                     y: {
@@ -859,6 +915,11 @@ HTML_TEMPLATE = """
                             }
                         }
                     }
+                },
+                elements: {
+                    line: {
+                        spanGaps: true
+                    }
                 }
             }
         });
@@ -877,6 +938,13 @@ HTML_TEMPLATE = """
         
         // 初始化图表
         function initCharts() {
+            // 获取所有时间戳（所有服务器共享）
+            let globalTimestamps = [];
+            if (Object.keys(historyData).length > 0) {
+                const firstServer = Object.values(historyData)[0];
+                globalTimestamps = firstServer.timestamps;
+            }
+            
             // 总显存图表
             const totalDatasets = [];
             let colorIndex = 0;
@@ -890,7 +958,7 @@ HTML_TEMPLATE = """
                         backgroundColor: colors[colorIndex % colors.length] + '20',
                         borderWidth: 2,
                         tension: 0.3,
-                        fill: true,
+                        fill: false,
                         pointRadius: 0,
                         pointHoverRadius: 4
                     });
@@ -898,9 +966,8 @@ HTML_TEMPLATE = """
                 }
             }
             
-            if (totalDatasets.length > 0) {
-                const firstServer = Object.values(historyData).find(d => d.timestamps.length > 0);
-                totalMemoryChart.data.labels = firstServer.timestamps;
+            if (globalTimestamps.length > 0) {
+                totalMemoryChart.data.labels = globalTimestamps;
                 totalMemoryChart.data.datasets = totalDatasets;
                 totalMemoryChart.update();
             }
@@ -949,10 +1016,10 @@ HTML_TEMPLATE = """
         // 初始化
         initCharts();
         
-        // 自动刷新
+        // 自动刷新页面（10秒）
         setInterval(function() {
             location.reload();
-        }, 5000);
+        }, 10000);
     </script>
 </body>
 </html>
@@ -996,14 +1063,30 @@ def index():
             'gpus': data.get('gpus', [])
         }
     
-    # 准备历史数据用于图表
+    # 准备历史数据用于图表 - 使用全局时间轴
     import json
     history_json = {}
+    
+    # 转换全局时间戳为列表
+    timestamps_list = list(global_timestamps)
+    
     for server_name, hist in history_data.items():
+        # 为每个时间点填充数据，如果没有则设为null
+        total_mem_data = []
+        gpu_mem_data = defaultdict(list)
+        
+        for ts in timestamps_list:
+            # 总显存
+            total_mem_data.append(hist['total_memory_percent'].get(ts, None))
+            
+            # 每个GPU的显存
+            for gpu_id in hist['gpu_memory'].keys():
+                gpu_mem_data[gpu_id].append(hist['gpu_memory'][gpu_id].get(ts, None))
+        
         history_json[server_name] = {
-            'timestamps': list(hist['timestamps']),
-            'total_memory_percent': list(hist['total_memory_percent']),
-            'gpu_memory': {k: list(v) for k, v in hist['gpu_memory'].items()}
+            'timestamps': timestamps_list,
+            'total_memory_percent': total_mem_data,
+            'gpu_memory': {k: v for k, v in gpu_mem_data.items()}
         }
     
     return render_template_string(
@@ -1021,6 +1104,8 @@ def index():
 @app.route('/api/update', methods=['POST'])
 def update_gpu_data():
     """接收客户端发送的GPU数据"""
+    global last_update_time
+    
     try:
         data = request.get_json()
         server_name = data.get('server_name', 'unknown')
@@ -1031,25 +1116,36 @@ def update_gpu_data():
             'last_update': time.time()
         }
         
-        # 更新历史数据
+        # 更新历史数据 - 使用全局时间轴
         gpus = data.get('gpus', [])
         if gpus:
+            current_time_str = datetime.now().strftime('%H:%M:%S')
+            current_timestamp = time.time()
+            
+            # 只在距离上次更新超过5秒时添加新的时间点
+            should_add_timestamp = (
+                last_update_time is None or 
+                (current_timestamp - last_update_time) >= 5
+            )
+            
+            if should_add_timestamp:
+                global_timestamps.append(current_time_str)
+                last_update_time = current_timestamp
+            
             # 计算总显存使用百分比
             total_used = sum(float(gpu.get('memory_used', '0').split()[0]) for gpu in gpus)
             total_capacity = sum(float(gpu.get('memory_total', '0').split()[0]) for gpu in gpus)
             total_percent = (total_used / total_capacity * 100) if total_capacity > 0 else 0
             
-            # 添加到历史记录
+            # 记录数据（使用时间戳作为key）
             hist = history_data[server_name]
-            current_time_str = datetime.now().strftime('%H:%M:%S')
-            hist['timestamps'].append(current_time_str)
-            hist['total_memory_percent'].append(round(total_percent, 1))
+            hist['total_memory_percent'][current_time_str] = round(total_percent, 1)
             
             # 记录每个GPU的显存使用
             for gpu in gpus:
                 gpu_id = str(gpu.get('index', 0))
                 mem_percent = float(gpu.get('memory_percent', 0))
-                hist['gpu_memory'][gpu_id].append(round(mem_percent, 1))
+                hist['gpu_memory'][gpu_id][current_time_str] = round(mem_percent, 1)
         
         return jsonify({'status': 'success', 'message': 'Data updated'}), 200
     except Exception as e:
@@ -1075,12 +1171,29 @@ def get_data():
 def get_history():
     """返回历史数据"""
     history_json = {}
+    
+    # 转换全局时间戳为列表
+    timestamps_list = list(global_timestamps)
+    
     for server_name, hist in history_data.items():
+        # 为每个时间点填充数据，如果没有则设为null
+        total_mem_data = []
+        gpu_mem_data = defaultdict(list)
+        
+        for ts in timestamps_list:
+            # 总显存
+            total_mem_data.append(hist['total_memory_percent'].get(ts, None))
+            
+            # 每个GPU的显存
+            for gpu_id in hist['gpu_memory'].keys():
+                gpu_mem_data[gpu_id].append(hist['gpu_memory'][gpu_id].get(ts, None))
+        
         history_json[server_name] = {
-            'timestamps': list(hist['timestamps']),
-            'total_memory_percent': list(hist['total_memory_percent']),
-            'gpu_memory': {k: list(v) for k, v in hist['gpu_memory'].items()}
+            'timestamps': timestamps_list,
+            'total_memory_percent': total_mem_data,
+            'gpu_memory': {k: v for k, v in gpu_mem_data.items()}
         }
+    
     return jsonify(history_json)
 
 def main():
